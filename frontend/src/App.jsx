@@ -108,7 +108,7 @@ function App() {
         body: JSON.stringify({ country, niche, limit: 8 }),
       });
       const results = data.results || [];
-      const saved = results.filter((item) => item.id || item.business_emails).length;
+      const saved = results.filter((item) => item.status !== "error" && item.status !== "save_error").length;
       const withEmails = results.filter((item) => (item.business_emails || []).length > 0).length;
       await loadLeads();
       setProgress({ done: results.length, total: results.length, message: "Discovery finished" });
