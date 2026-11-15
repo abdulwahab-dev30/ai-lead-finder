@@ -101,10 +101,12 @@ def robots_permits(url: str, session: requests.Session) -> bool:
     parsed = urlparse(url)
     robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
     try:
-        response = session.get(robots_url, timeout=5, allow_redirects=False)
-        if response.status_code == 404:
+        response = session.get(robots_url, timeout=5, allow_redirects=True)
+        # RFC 9309: a robots.txt 4xx response means the file is unavailable;
+        # crawling may proceed. A 5xx/network failure remains fail-closed.
+        if 400 <= response.status_code < 500:
             return True
-        if response.status_code != 200:
+        if response.status_code >= 500 or response.status_code != 200:
             return False
         parser = RobotFileParser()
         parser.parse(response.text.splitlines())
@@ -189,6 +191,8 @@ def scan_website(website: str, country: str, niche: str):
     session.headers.update({"User-Agent": USER_AGENT, "Accept": "text/html"})
     queue = [normalized]
     visited, found, texts, email_sources = set(), set(), [], []
+    robots_denied = 0
+    fetch_failed = 0
     company = domain
     # Common official contact routes help when the homepage has no visible email link.
     common_contact_paths = (
@@ -199,11 +203,15 @@ def scan_website(website: str, country: str, niche: str):
     queue.extend(urljoin(normalized.rstrip("/") + "/", path.lstrip("/")) for path in common_contact_paths)
     while queue and len(visited) < MAX_PAGES_PER_SITE:
         current = queue.pop(0)
-        if current in visited or not robots_permits(current, session):
+        if current in visited:
+            continue
+        if not robots_permits(current, session):
+            robots_denied += 1
             continue
         visited.add(current)
         html = fetch_html(current, session, domain)
         if not html:
+            fetch_failed += 1
             continue
         soup = BeautifulSoup(html, "html.parser")
         if len(visited) == 1 and soup.title:
@@ -220,6 +228,15 @@ def scan_website(website: str, country: str, niche: str):
             queue = list(dict.fromkeys(queue))
         time.sleep(0.25)
     combined = " ".join(texts)
+    print(
+        "Website scan diagnostics:",
+        domain,
+        "pages_checked:", len(visited),
+        "pages_with_content:", len(texts),
+        "robots_denied:", robots_denied,
+        "fetch_failed:", fetch_failed,
+        "emails_found:", len(found),
+    )
     return {
         "company": company,
         "website": normalized,
