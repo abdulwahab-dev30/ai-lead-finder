@@ -369,13 +369,44 @@ def discover_and_scan(payload: DiscoverRequest, user=Depends(authenticate)):
     db = get_supabase()
     results = []
     for website in websites:
+        # Always preserve the discovered business, even if its website blocks crawling
+        # or no public email address is published.
+        base_lead = {
+            "company": domain_of(website),
+            "website": website,
+            "country": payload.country,
+            "niche": payload.niche,
+            "business_emails": [],
+            "email_source_pages": [],
+            "lead_score": 0,
+            "status": "new",
+            "notes": "Business discovered. No public email confirmed yet; review the official website/contact page.",
+            "last_scanned_at": datetime.now(timezone.utc).isoformat(),
+            "owner_id": user["id"],
+        }
         try:
             lead = scan_website(website, payload.country, payload.niche)
-            lead["owner_id"] = user["id"]
-            saved = db.table("leads").upsert(lead, on_conflict="owner_id,website").execute()
-            results.extend(saved.data or [lead])
+            base_lead.update(lead)
         except Exception as exc:
-            results.append({"website": website, "status": "error", "error": type(exc).__name__})
+            # Keep the prospect instead of dropping it because of a scan/robots/network error.
+            base_lead["notes"] = (
+                "Business discovered; website scan could not be completed ("
+                + type(exc).__name__
+                + "). Review the official website manually."
+            )
+        try:
+            saved = db.table("leads").upsert(
+                base_lead, on_conflict="owner_id,website"
+            ).execute()
+            results.extend(saved.data or [base_lead])
+        except Exception as exc:
+            results.append({
+                "website": website,
+                "company": base_lead["company"],
+                "business_emails": base_lead["business_emails"],
+                "status": "save_error",
+                "error": type(exc).__name__,
+            })
     return {"results": results, "discovered": len(websites)}
 
 @app.post("/api/scan")
