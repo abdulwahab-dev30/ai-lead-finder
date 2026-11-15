@@ -1,0 +1,17 @@
+[project]
+name = "ai-lead-finder"
+version = "1.0.0"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi==0.121.3",
+  "uvicorn==0.38.0",
+  "supabase==2.24.0",
+  "requests==2.32.5",
+  "beautifulsoup4==4.14.2"
+]
+
+[tool.vercel]
+entrypoint = "app.py"
+
+[tool.vercel.scripts]
+build = "python build.py"
