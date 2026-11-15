@@ -378,6 +378,62 @@ def discover_websites(country: str, niche: str, limit: int):
     return found[:limit]
 
 
+class EmailDraftRequest(BaseModel):
+    company: str = Field(min_length=1, max_length=160)
+    website: str = Field(min_length=1, max_length=500)
+    country: str = Field(default="", max_length=80)
+    niche: str = Field(default="", max_length=120)
+    recipient_email: str = Field(default="", max_length=254)
+    sender_name: str = Field(default="Your Name", max_length=100)
+    service: str = Field(default="React, Bubble.io and web application development", max_length=240)
+    tone: str = Field(default="professional and friendly", max_length=80)
+
+@app.post("/api/generate-email")
+def generate_email(payload: EmailDraftRequest, user=Depends(authenticate)):
+    """Create a tailored, editable cold outreach draft without inventing company facts."""
+    company = payload.company.strip()
+    website = payload.website.strip()
+    service = payload.service.strip()
+    subject = f"Development support for {company}"
+    body = (
+        f"Hi {company} team,\n\n"
+        f"I came across {company} while researching {payload.niche or 'technology companies'} "
+        f"in {payload.country or 'your market'}. I wanted to introduce myself and see whether "
+        f"your team ever works with external development partners.\n\n"
+        f"I help businesses with {service}. I can support an existing team with focused delivery, "
+        f"feature development, integrations, or short-term project work.\n\n"
+        f"If you have any upcoming work where an extra developer could help, would you be open "
+        f"to a brief conversation?\n\n"
+        f"Best regards,\n{payload.sender_name.strip() or 'Your Name'}"
+    )
+    # Use OpenAI when a server-side key is configured; keep a safe editable fallback otherwise.
+    api_key = env("OPENAI_API_KEY")
+    if api_key:
+        try:
+            response = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": env("OPENAI_MODEL") or "gpt-4o-mini",
+                    "temperature": 0.6,
+                    "messages": [
+                        {"role": "system", "content": "Write concise, respectful B2B cold outreach emails. Never invent facts about the recipient company, claim to have reviewed projects not supplied, or use deceptive familiarity. Return only JSON with subject and body."},
+                        {"role": "user", "content": f"Write a personalized but truthful first-contact email. Company: {company}. Website: {website}. Country: {payload.country}. Business type: {payload.niche}. Recipient: {payload.recipient_email or 'general business inbox'}. Sender: {payload.sender_name}. Services offered: {service}. Tone: {payload.tone}. Ask whether they need external development support. JSON only."}
+                    ],
+                    "response_format": {"type": "json_object"},
+                },
+                timeout=20,
+            )
+            response.raise_for_status()
+            generated = response.json()["choices"][0]["message"]["content"]
+            import json
+            parsed = json.loads(generated)
+            subject = str(parsed.get("subject") or subject)[:180]
+            body = str(parsed.get("body") or body)[:5000]
+        except Exception as exc:
+            print("AI email generation fallback:", type(exc).__name__)
+    return {"subject": subject, "body": body, "ai_generated": bool(api_key and subject != f"Development support for {company}")}
+
 class ScanRequest(BaseModel):
     websites: list[str] = Field(min_length=1, max_length=MAX_URLS_PER_BATCH)
     country: str = Field(default="USA", max_length=40)
