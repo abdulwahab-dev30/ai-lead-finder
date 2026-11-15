@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [tool.vercel]
-entrypoint = "app.py"
+entrypoint = "app:app"
 
 [tool.vercel.scripts]
 build = "python build.py"
