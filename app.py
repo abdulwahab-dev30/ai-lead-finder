@@ -255,6 +255,107 @@ class DiscoverRequest(BaseModel):
     niche: str = Field(default="Software development agencies", max_length=100)
     limit: int = Field(default=8, ge=1, le=8)
 
+def discover_from_openstreetmap(country: str, niche: str, limit: int):
+    """Find businesses with publicly mapped websites using free OpenStreetMap data."""
+    headers = {
+        "User-Agent": "AILeadFinder/1.0 (public business research; contact: admin)",
+        "Accept": "application/json",
+    }
+    session = requests.Session()
+    session.headers.update(headers)
+    geo = session.get(
+        "https://nominatim.openstreetmap.org/search",
+        params={"country": country, "format": "jsonv2", "limit": 1},
+        timeout=15,
+    )
+    geo.raise_for_status()
+    places = geo.json()
+    if not places:
+        return []
+    place = places[0]
+    osm_type = place.get("osm_type")
+    osm_id = int(place.get("osm_id", 0))
+    area_id = osm_id + (3600000000 if osm_type == "relation" else 2400000000 if osm_type == "way" else 0)
+    if not area_id:
+        return []
+
+    niche_text = niche.lower()
+    tag_filters = {
+        "software": ['["office"="it"]', '["craft"="software"]', '["office"="company"]'],
+        "it": ['["office"="it"]', '["craft"="software"]'],
+        "technology": ['["office"="it"]', '["craft"="software"]'],
+        "web development": ['["office"="it"]', '["craft"="software"]'],
+        "marketing": ['["office"="advertising"]', '["office"="marketing"]'],
+        "digital marketing": ['["office"="advertising"]', '["office"="marketing"]'],
+        "restaurant": ['["amenity"="restaurant"]'],
+        "cafe": ['["amenity"="cafe"]'],
+        "hotel": ['["tourism"="hotel"]', '["tourism"="guest_house"]'],
+        "construction": ['["office"="construction_company"]', '["craft"="builder"]'],
+        "real estate": ['["office"="estate_agent"]'],
+        "medical": ['["amenity"="clinic"]', '["amenity"="doctors"]'],
+        "healthcare": ['["amenity"="clinic"]', '["amenity"="doctors"]'],
+        "education": ['["amenity"="school"]', '["amenity"="college"]', '["amenity"="university"]'],
+        "law": ['["office"="lawyer"]'],
+        "accounting": ['["office"="accountant"]'],
+        "travel": ['["office"="travel_agent"]'],
+    }
+    selected = []
+    for key, filters in tag_filters.items():
+        if key in niche_text:
+            selected.extend(filters)
+    if selected:
+        selectors = "\n".join(f'  nwr{flt}["name"]["website"](area.searchArea);' for flt in dict.fromkeys(selected))
+    else:
+        selectors = '\n'.join([
+            '  nwr["name"]["website"]["office"](area.searchArea);',
+            '  nwr["name"]["website"]["shop"](area.searchArea);',
+            '  nwr["name"]["website"]["amenity"](area.searchArea);',
+            '  nwr["name"]["website"]["craft"](area.searchArea);',
+            '  nwr["name"]["website"]["tourism"](area.searchArea);',
+        ])
+    query = f'[out:json][timeout:25]; area({area_id})->.searchArea; (\\n{selectors}\\n); out center tags 300;'
+    endpoints = [
+        "https://overpass-api.de/api/interpreter",
+        "https://overpass.kumi.systems/api/interpreter",
+        "https://overpass.private.coffee/api/interpreter",
+    ]
+    data = None
+    for endpoint in endpoints:
+        try:
+            response = session.post(endpoint, data={"data": query}, timeout=35)
+            if response.ok:
+                data = response.json()
+                break
+        except (requests.RequestException, ValueError):
+            continue
+    if data is None:
+        return []
+
+    results, seen = [], set()
+    for element in data.get("elements", []):
+        tags = element.get("tags") or {}
+        raw_url = tags.get("website") or tags.get("contact:website") or ""
+        if not raw_url:
+            continue
+        if not raw_url.startswith(("http://", "https://")):
+            raw_url = "https://" + raw_url
+        try:
+            parsed = urlparse(raw_url)
+            host = (parsed.hostname or "").lower().removeprefix("www.")
+            if parsed.scheme not in ("http", "https") or not host or "." not in host or host in seen:
+                continue
+            if not public_host(raw_url):
+                continue
+            seen.add(host)
+            results.append(raw_url.rstrip("/"))
+            if len(results) >= limit:
+                break
+        except Exception:
+            continue
+    print("OpenStreetMap discovery:", country, niche, "results:", len(results))
+    return results
+
+
 def discover_websites(country: str, niche: str, limit: int):
     """Discover official business domains using provider-specific result parsers."""
     queries = [
@@ -277,6 +378,16 @@ def discover_websites(country: str, niche: str, limit: int):
     session = requests.Session()
     session.headers.update(headers)
     found, seen, diagnostics = [], set(), []
+    # Free OpenStreetMap discovery is tried first; search engines remain fallbacks.
+    try:
+        for candidate in discover_from_openstreetmap(country, niche, limit):
+            parsed = urlparse(candidate)
+            host = (parsed.hostname or "").lower().removeprefix("www.")
+            if host and host not in seen:
+                seen.add(host)
+                found.append(candidate)
+    except Exception as exc:
+        diagnostics.append(f"OpenStreetMap:{type(exc).__name__}")
 
     def add_candidate(raw_url: str):
         raw_url = unquote((raw_url or "").strip())
