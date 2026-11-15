@@ -161,7 +161,6 @@ function App() {
     const recipient = recipientEmail.trim();
     const href = `mailto:${encodeURIComponent(recipient)}?subject=${encodeURIComponent(draftSubject)}&body=${encodeURIComponent(draftBody)}`;
     window.location.href = href;
-    if (emailLead.id) updateStatus(emailLead.id, "contacted");
   }
 
   async function updateStatus(id, status) {
