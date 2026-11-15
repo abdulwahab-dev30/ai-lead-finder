@@ -4,7 +4,7 @@ import re
 import socket
 import time
 from datetime import datetime, timezone
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 from urllib.robotparser import RobotFileParser
 
 import requests
@@ -217,6 +217,40 @@ def scan_website(website: str, country: str, niche: str):
         "last_scanned_at": datetime.now(timezone.utc).isoformat(),
     }
 
+class DiscoverRequest(BaseModel):
+    country: str = Field(default="USA", max_length=40)
+    niche: str = Field(default="Software development agencies", max_length=100)
+    limit: int = Field(default=8, ge=1, le=8)
+
+def discover_websites(country: str, niche: str, limit: int):
+    query = f'"{niche}" companies agencies {country} contact'
+    response = requests.get(
+        "https://html.duckduckgo.com/html/",
+        params={"q": query},
+        headers={"User-Agent": "Mozilla/5.0 (compatible; AILeadFinder/1.0)"},
+        timeout=12,
+    )
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+    found, seen = [], set()
+    for anchor in soup.select("a.result__a"):
+        href = anchor.get("href", "")
+        parsed = urlparse(href)
+        if "duckduckgo.com" in (parsed.hostname or ""):
+            href = parse_qs(parsed.query).get("uddg", [href])[0]
+            href = unquote(href)
+        try:
+            normalized = normalize_url(href)
+            domain = domain_of(normalized)
+            if domain and domain not in seen and public_host(normalized):
+                seen.add(domain)
+                found.append(normalized)
+                if len(found) >= limit:
+                    break
+        except Exception:
+            continue
+    return found
+
 class ScanRequest(BaseModel):
     websites: list[str] = Field(min_length=1, max_length=MAX_URLS_PER_BATCH)
     country: str = Field(default="USA", max_length=40)
@@ -228,6 +262,26 @@ class StatusUpdate(BaseModel):
 @app.get("/api/health")
 def health():
     return {"ok": True, "service": APP_NAME, "batch_limit": MAX_URLS_PER_BATCH}
+
+@app.post("/api/discover")
+def discover_and_scan(payload: DiscoverRequest, user=Depends(authenticate)):
+    try:
+        websites = discover_websites(payload.country, payload.niche, payload.limit)
+    except requests.RequestException:
+        raise HTTPException(502, "Business discovery is temporarily unavailable. Please try again shortly.")
+    if not websites:
+        return {"results": [], "message": "No discoverable websites returned for this search."}
+    db = get_supabase()
+    results = []
+    for website in websites:
+        try:
+            lead = scan_website(website, payload.country, payload.niche)
+            lead["owner_id"] = user["id"]
+            saved = db.table("leads").upsert(lead, on_conflict="owner_id,website").execute()
+            results.extend(saved.data or [lead])
+        except Exception as exc:
+            results.append({"website": website, "status": "error", "error": type(exc).__name__})
+    return {"results": results, "discovered": len(websites)}
 
 @app.post("/api/scan")
 def scan_batch(payload: ScanRequest, user=Depends(authenticate)):
