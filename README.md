@@ -80,3 +80,6 @@ For local frontend development, set `VITE_API_BASE=http://127.0.0.1:8000` in `fr
 
 ## Free-tier notes
 The code uses open-source libraries and no paid AI API. Supabase and Vercel free plans have quotas and policy limits that can change. Vercel Hobby is intended for personal/non-commercial use; do not use it for a commercial lead-generation service unless your plan terms permit that. Check current terms before monetized use. Scanning multiple websites is network-intensive and websites may rate-limit requests.
+
+
+Deployment uses Vercel's FastAPI runtime with the `app:app` entrypoint.
