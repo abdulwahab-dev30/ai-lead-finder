@@ -223,33 +223,53 @@ class DiscoverRequest(BaseModel):
     limit: int = Field(default=8, ge=1, le=8)
 
 def discover_websites(country: str, niche: str, limit: int):
-    query = f'"{niche}" companies agencies {country} contact'
-    response = requests.get(
-        "https://html.duckduckgo.com/html/",
-        params={"q": query},
-        headers={"User-Agent": "Mozilla/5.0 (compatible; AILeadFinder/1.0)"},
-        timeout=12,
-    )
-    response.raise_for_status()
-    soup = BeautifulSoup(response.text, "html.parser")
-    found, seen = [], set()
-    for anchor in soup.select("a.result__a"):
-        href = anchor.get("href", "")
-        parsed = urlparse(href)
-        if "duckduckgo.com" in (parsed.hostname or ""):
-            href = parse_qs(parsed.query).get("uddg", [href])[0]
-            href = unquote(href)
+    query = f'"{niche}" {country} company agency official website'
+    providers = [
+        ("DuckDuckGo", "https://html.duckduckgo.com/html/", {"q": query}),
+        ("Bing", "https://www.bing.com/search", {"q": query}),
+    ]
+    found, seen, diagnostics = [], set(), []
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    excluded = {
+        "google.com", "bing.com", "duckduckgo.com", "facebook.com",
+        "linkedin.com", "instagram.com", "youtube.com", "wikipedia.org",
+        "yelp.com", "clutch.co", "crunchbase.com",
+    }
+    for provider, endpoint, params in providers:
         try:
-            normalized = normalize_url(href)
-            domain = domain_of(normalized)
-            if domain and domain not in seen and public_host(normalized):
-                seen.add(domain)
-                found.append(normalized)
-                if len(found) >= limit:
-                    break
-        except Exception:
-            continue
+            response = requests.get(endpoint, params=params, headers=headers, timeout=12)
+            diagnostics.append(f"{provider}:{response.status_code}")
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, "html.parser")
+            anchors = soup.select("a.result__a, .result a[href], li.b_algo h2 a, h2 a")
+            for anchor in anchors:
+                href = (anchor.get("href") or "").strip()
+                parsed = urlparse(href)
+                if "duckduckgo.com" in (parsed.hostname or ""):
+                    href = parse_qs(parsed.query).get("uddg", [href])[0]
+                    href = unquote(href)
+                try:
+                    normalized = normalize_url(href)
+                    domain = domain_of(normalized)
+                    if not domain or any(domain == item or domain.endswith("." + item) for item in excluded):
+                        continue
+                    if domain not in seen and public_host(normalized):
+                        seen.add(domain)
+                        found.append(normalized)
+                        if len(found) >= limit:
+                            return found
+                except Exception:
+                    continue
+        except requests.RequestException as exc:
+            diagnostics.append(f"{provider}:{type(exc).__name__}")
+    print("Business discovery providers:", ", ".join(diagnostics), "results:", len(found))
     return found
+
+
 
 class ScanRequest(BaseModel):
     websites: list[str] = Field(min_length=1, max_length=MAX_URLS_PER_BATCH)
@@ -270,7 +290,7 @@ def discover_and_scan(payload: DiscoverRequest, user=Depends(authenticate)):
     except requests.RequestException:
         raise HTTPException(502, "Business discovery is temporarily unavailable. Please try again shortly.")
     if not websites:
-        return {"results": [], "message": "No discoverable websites returned for this search."}
+        raise HTTPException(502, "Search providers did not return company websites. Please try a different business type or try again later.")
     db = get_supabase()
     results = []
     for website in websites:
