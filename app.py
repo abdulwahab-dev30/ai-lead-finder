@@ -313,7 +313,7 @@ def discover_from_openstreetmap(country: str, niche: str, limit: int):
             '  nwr["name"]["website"]["craft"](area.searchArea);',
             '  nwr["name"]["website"]["tourism"](area.searchArea);',
         ])
-    query = f'[out:json][timeout:25]; area({area_id})->.searchArea; (\\n{selectors}\\n); out center tags 300;'
+    query = f'[out:json][timeout:25]; area({area_id})->.searchArea; ({selectors}); out center tags 300;'
     endpoints = [
         "https://overpass-api.de/api/interpreter",
         "https://overpass.kumi.systems/api/interpreter",
