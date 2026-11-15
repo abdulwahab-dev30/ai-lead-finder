@@ -3,6 +3,7 @@ import os
 import re
 import socket
 import time
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 from urllib.robotparser import RobotFileParser
@@ -274,10 +275,16 @@ def discover_websites(country: str, niche: str, limit: int):
             )
             diagnostics.append(f"BingRSS:{response.status_code}")
             if response.ok and ("<rss" in response.text[:1000].lower() or "<feed" in response.text[:1000].lower()):
-                feed = BeautifulSoup(response.text, "xml")
-                for item in feed.find_all(["item", "entry"]):
-                    link = item.find("link")
-                    href = (link.get("href") if link and link.get("href") else link.get_text(strip=True) if link else "")
+                root = ET.fromstring(response.content)
+                for item in root.iter():
+                    if item.tag.split("}")[-1].lower() not in ("item", "entry"):
+                        continue
+                    href = ""
+                    for child in list(item):
+                        if child.tag.split("}")[-1].lower() == "link":
+                            href = child.attrib.get("href") or (child.text or "").strip()
+                            if href:
+                                break
                     add_candidate(href)
                     if len(found) >= limit:
                         break
