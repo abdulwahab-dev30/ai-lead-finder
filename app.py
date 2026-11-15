@@ -139,12 +139,11 @@ def extract_emails(soup: BeautifulSoup):
     found = set()
     for anchor in soup.select('a[href^="mailto:"]'):
         candidate = anchor.get("href", "").split(":", 1)[-1].split("?", 1)[0].strip()
-        if EMAIL_RE.fullmatch(candidate) and role_based(candidate):
+        if EMAIL_RE.fullmatch(candidate):
             found.add(candidate.lower())
     text = soup.get_text(" ", strip=True)
     for candidate in EMAIL_RE.findall(text):
-        if role_based(candidate):
-            found.add(candidate.lower())
+        found.add(candidate.lower())
     return found
 
 def useful_links(soup: BeautifulSoup, base: str, domain: str):
