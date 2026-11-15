@@ -27,7 +27,7 @@ ROLE_PREFIXES = {
 EMAIL_RE = re.compile(r"(?i)\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b")
 PAGE_HINTS = ("contact", "about", "team", "company", "services", "partnership", "business")
 MAX_URLS_PER_BATCH = 3
-MAX_PAGES_PER_SITE = 4
+MAX_PAGES_PER_SITE = 8
 
 app = FastAPI(title=APP_NAME, version="1.0.0")
 app.add_middleware(
@@ -135,15 +135,22 @@ def fetch_html(url: str, session: requests.Session, original_domain: str):
 def domain_of(url: str) -> str:
     return (urlparse(url).hostname or "").lower().removeprefix("www.")
 
-def extract_emails(soup: BeautifulSoup):
+def extract_emails(soup: BeautifulSoup, raw_html: str = ""):
+    """Extract email addresses visibly published in page text, links, attributes and common obfuscations."""
     found = set()
     for anchor in soup.select('a[href^="mailto:"]'):
         candidate = anchor.get("href", "").split(":", 1)[-1].split("?", 1)[0].strip()
-        if EMAIL_RE.fullmatch(candidate):
+        for address in EMAIL_RE.findall(candidate):
+            found.add(address.lower())
+
+    # Search rendered text, raw HTML (including footer/script data), and common human-readable obfuscations.
+    sources = [soup.get_text(" ", strip=True), raw_html]
+    for source in sources:
+        normalized = source
+        normalized = re.sub(r"(?i)\s*(\[at\]|\(at\)|\s+at\s+)\s*", "@", normalized)
+        normalized = re.sub(r"(?i)\s*(\[dot\]|\(dot\)|\s+dot\s+)\s*", ".", normalized)
+        for candidate in EMAIL_RE.findall(normalized):
             found.add(candidate.lower())
-    text = soup.get_text(" ", strip=True)
-    for candidate in EMAIL_RE.findall(text):
-        found.add(candidate.lower())
     return found
 
 def useful_links(soup: BeautifulSoup, base: str, domain: str):
@@ -183,6 +190,13 @@ def scan_website(website: str, country: str, niche: str):
     queue = [normalized]
     visited, found, texts, email_sources = set(), set(), [], []
     company = domain
+    # Common official contact routes help when the homepage has no visible email link.
+    common_contact_paths = (
+        "/contact", "/contact-us", "/about", "/about-us",
+        "/company", "/imprint", "/impressum", "/get-in-touch",
+        "/contact.html", "/contact/",
+    )
+    queue.extend(urljoin(normalized.rstrip("/") + "/", path.lstrip("/")) for path in common_contact_paths)
     while queue and len(visited) < MAX_PAGES_PER_SITE:
         current = queue.pop(0)
         if current in visited or not robots_permits(current, session):
@@ -196,12 +210,14 @@ def scan_website(website: str, country: str, niche: str):
             company = soup.title.get_text(" ", strip=True)[:160] or domain
         text = soup.get_text(" ", strip=True)
         texts.append(text[:10000])
-        emails = extract_emails(soup)
+        emails = extract_emails(soup, html)
         if emails:
             found.update(emails)
             email_sources.append(current)
         if len(visited) == 1:
             queue.extend(useful_links(soup, current, domain))
+            # Prioritize links explicitly labelled contact/about over generic navigation.
+            queue = list(dict.fromkeys(queue))
         time.sleep(0.25)
     combined = " ".join(texts)
     return {
@@ -213,7 +229,7 @@ def scan_website(website: str, country: str, niche: str):
         "email_source_pages": email_sources,
         "lead_score": calculate_score(company, combined, found),
         "status": "new",
-        "notes": "Public role-based inbox only. Manually review relevance and legal basis before outreach.",
+        "notes": "Publicly listed website contact details. Manually review relevance and legal basis before outreach.",
         "last_scanned_at": datetime.now(timezone.utc).isoformat(),
     }
 
