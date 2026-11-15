@@ -19,7 +19,10 @@ jobs:
 
       - name: Extract project files into repository root
         run: |
-          test -f AI_Lead_Finder.zip
+          if [ ! -f AI_Lead_Finder.zip ]; then
+            echo "No source archive to extract; skipping."
+            exit 0
+          fi
           unzip -oq AI_Lead_Finder.zip
           cp -a ai-lead-finder/. .
           rm -rf ai-lead-finder
