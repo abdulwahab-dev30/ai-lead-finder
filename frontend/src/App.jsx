@@ -100,34 +100,24 @@ function App() {
 
   async function runScan(event) {
     event.preventDefault();
-    const list = [...new Set(urls.split(/\n|,/).map((x) => x.trim()).filter(Boolean))].slice(0, 25);
-    if (!list.length) return setNotice("Paste at least one official company website URL.");
     setSearching(true); setNotice("");
-    setProgress({ done: 0, total: list.length, message: "Preparing small scan batches…" });
-    let done = 0, saved = 0, failed = 0;
-    for (let i = 0; i < list.length; i += 3) {
-      const batch = list.slice(i, i + 3);
-      setProgress({ done, total: list.length, message: `Scanning companies ${i + 1}–${i + batch.length} of ${list.length}` });
-      try {
-        const data = await api("/scan", {
-          method: "POST",
-          body: JSON.stringify({ websites: batch, country, niche }),
-        });
-        for (const result of data.results || []) {
-          if (result.id || result.business_emails) saved += 1;
-          else failed += 1;
-        }
-      } catch (error) {
-        failed += batch.length;
-        setNotice(error.message);
-      }
-      done += batch.length;
-      setProgress({ done, total: list.length, message: `${done} of ${list.length} processed` });
+    setProgress({ done: 0, total: 0, message: "Discovering businesses for your selected market…" });
+    try {
+      const data = await api("/discover", {
+        method: "POST",
+        body: JSON.stringify({ country, niche, limit: 8 }),
+      });
+      const results = data.results || [];
+      const saved = results.filter((item) => item.id || item.business_emails).length;
+      const withEmails = results.filter((item) => (item.business_emails || []).length > 0).length;
+      await loadLeads();
+      setProgress({ done: results.length, total: results.length, message: "Discovery finished" });
+      setNotice(`Found ${results.length} businesses; ${withEmails} had public business emails. ${saved} saved to your leads.`);
+    } catch (error) {
+      setNotice(error.message);
+    } finally {
+      setSearching(false);
     }
-    await loadLeads();
-    setSearching(false);
-    setProgress({ done: list.length, total: list.length, message: "Scan finished" });
-    setNotice(`Scan complete. ${saved} result(s) saved; ${failed} item(s) need review.`);
   }
 
   async function updateStatus(id, status) {
@@ -247,14 +237,12 @@ function App() {
                 <label>Target market<select value={country} onChange={(e) => setCountry(e.target.value)}>{countries.map((c) => <option key={c}>{c}</option>)}</select></label>
                 <label>Agency type<select value={niche} onChange={(e) => setNiche(e.target.value)}>{niches.map((n) => <option key={n}>{n}</option>)}</select></label>
               </div>
-              <div className="search-link-row"><div><b>Find companies on Google</b><small>Opens a targeted search in a new tab.</small></div><a className="search-link" href={searchHref(niche, country)} target="_blank" rel="noreferrer">Open search <ArrowUpRight size={14}/></a></div>
               <form onSubmit={runScan}>
-                <div className="textarea-label"><label htmlFor="urls">Company website URLs</label><span>Up to 25 per search</span></div>
-                <textarea id="urls" value={urls} onChange={(e) => setUrls(e.target.value)} placeholder={"https://agency-one.com\nhttps://studio-two.com\nhttps://company-three.com"} rows={5}/>
-                <div className="scan-footer"><span><ShieldCheck size={14}/> Checks robots.txt · Same-domain pages only</span><button className="primary" disabled={searching || !urls.trim()}>{searching ? <><Loader2 className="spin" size={16}/> Scanning</> : <><Search size={16}/> Scan websites</>}</button></div>
+                <div className="discovery-note" style={{marginTop:16,marginBottom:14,borderTop:0,paddingTop:0}}><CircleHelp size={15}/><span>Choose a country and business type. The system will discover company websites and scan them for publicly listed business inboxes.</span></div>
+                <div className="scan-footer"><span><ShieldCheck size={14}/> Automatic discovery · Public business emails only</span><button className="primary" disabled={searching}>{searching ? <><Loader2 className="spin" size={16}/> Finding leads…</> : <><Search size={16}/> Find Leads</>}</button></div>
               </form>
-              {searching && <div className="progress-wrap"><div className="progress-copy"><b>{progress.message}</b><span>{progress.done}/{progress.total}</span></div><div className="progress-track"><div style={{width: `${progress.total ? (progress.done / progress.total) * 100 : 0}%`}}/></div></div>}
-              <div className="discovery-note"><CircleHelp size={15}/><span>Free search APIs are not assumed. This tool helps you research official websites; it does not scrape Google results or guarantee an email for every company.</span></div>
+              {searching && <div className="progress-wrap"><div className="progress-copy"><b>{progress.message}</b><span>{progress.done}/{progress.total || "…"}</span></div><div className="progress-track"><div style={{width: `${progress.total ? (progress.done / progress.total) * 100 : 8}%`}}/></div></div>}
+              <div className="discovery-note"><CircleHelp size={15}/><span>Search engine access and website publishing determine how many results are available. Some businesses may not publish an email address.</span></div>
             </div>
 
             <div className="panel guide-panel">
