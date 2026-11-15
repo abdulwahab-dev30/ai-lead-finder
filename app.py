@@ -223,52 +223,84 @@ class DiscoverRequest(BaseModel):
     limit: int = Field(default=8, ge=1, le=8)
 
 def discover_websites(country: str, niche: str, limit: int):
-    query = f'"{niche}" {country} company agency official website'
-    providers = [
-        ("DuckDuckGo", "https://html.duckduckgo.com/html/", {"q": query}),
-        ("Bing", "https://www.bing.com/search", {"q": query}),
+    # Use several public search frontends because any single engine may rate-limit
+    # serverless requests. Search results are candidates only; scan_website()
+    # performs the SSRF/public-host checks before fetching a business site.
+    queries = [
+        f"{niche} companies in {country} official website",
+        f"best {niche} businesses {country}",
     ]
-    found, seen, diagnostics = [], set(), []
+    providers = [
+        ("DuckDuckGo HTML", "https://html.duckduckgo.com/html/"),
+        ("DuckDuckGo Lite", "https://lite.duckduckgo.com/lite/"),
+        ("Bing", "https://www.bing.com/search"),
+        ("Yahoo", "https://search.yahoo.com/search"),
+    ]
+    excluded = {
+        "google.com", "bing.com", "duckduckgo.com", "yahoo.com",
+        "facebook.com", "linkedin.com", "instagram.com", "youtube.com",
+        "wikipedia.org", "yelp.com", "clutch.co", "crunchbase.com",
+        "mapquest.com", "yellowpages.com", "trustpilot.com",
+    }
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
     }
-    excluded = {
-        "google.com", "bing.com", "duckduckgo.com", "facebook.com",
-        "linkedin.com", "instagram.com", "youtube.com", "wikipedia.org",
-        "yelp.com", "clutch.co", "crunchbase.com",
-    }
-    for provider, endpoint, params in providers:
-        try:
-            response = requests.get(endpoint, params=params, headers=headers, timeout=12)
-            diagnostics.append(f"{provider}:{response.status_code}")
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, "html.parser")
-            anchors = soup.select("a.result__a, .result a[href], li.b_algo h2 a, h2 a")
-            for anchor in anchors:
-                href = (anchor.get("href") or "").strip()
-                parsed = urlparse(href)
-                if "duckduckgo.com" in (parsed.hostname or ""):
-                    href = parse_qs(parsed.query).get("uddg", [href])[0]
-                    href = unquote(href)
-                try:
-                    normalized = normalize_url(href)
-                    domain = domain_of(normalized)
-                    if not domain or any(domain == item or domain.endswith("." + item) for item in excluded):
-                        continue
-                    if domain not in seen and public_host(normalized):
-                        seen.add(domain)
-                        found.append(normalized)
-                        if len(found) >= limit:
-                            return found
-                except Exception:
-                    continue
-        except requests.RequestException as exc:
-            diagnostics.append(f"{provider}:{type(exc).__name__}")
-    print("Business discovery providers:", ", ".join(diagnostics), "results:", len(found))
-    return found
+    found, seen, diagnostics = [], set(), []
+    session = requests.Session()
+    session.headers.update(headers)
 
+    def unwrap_result(href: str) -> str:
+        href = (href or "").strip()
+        parsed = urlparse(href)
+        host = (parsed.hostname or "").lower()
+        if host.endswith("duckduckgo.com") and parsed.path.startswith("/l/"):
+            target = parse_qs(parsed.query).get("uddg", [""])[0]
+            return unquote(target)
+        if host.endswith("bing.com") and parsed.path.startswith("/ck/"):
+            # Bing's tracking links are not business websites.
+            return ""
+        if href.startswith("//"):
+            return "https:" + href
+        return href
+
+    for provider, endpoint in providers:
+        provider_count = 0
+        for query in queries:
+            try:
+                response = session.get(endpoint, params={"q": query, "p": query}, timeout=10)
+                diagnostics.append(f"{provider}:{response.status_code}")
+                response.raise_for_status()
+                soup = BeautifulSoup(response.text, "html.parser")
+                anchors = soup.select(
+                    "a.result__a, .result a[href], .web-result a[href], "
+                    "li.b_algo h2 a, h2 a, a[href]"
+                )
+                for anchor in anchors:
+                    href = unwrap_result(anchor.get("href", ""))
+                    parsed = urlparse(href)
+                    host = (parsed.hostname or "").lower().removeprefix("www.")
+                    if parsed.scheme not in ("http", "https") or not host or "." not in host:
+                        continue
+                    if any(host == item or host.endswith("." + item) for item in excluded):
+                        continue
+                    # Skip obvious non-company file and social/profile destinations.
+                    if parsed.path.lower().endswith((".pdf", ".jpg", ".png", ".jpeg")):
+                        continue
+                    if host not in seen:
+                        seen.add(host)
+                        found.append(parsed._replace(query="", fragment="").geturl())
+                        provider_count += 1
+                        if len(found) >= limit:
+                            print("Business discovery diagnostics:", ", ".join(diagnostics), "results:", len(found))
+                            return found
+            except requests.RequestException as exc:
+                diagnostics.append(f"{provider}:{type(exc).__name__}")
+        diagnostics.append(f"{provider}_candidates:{provider_count}")
+    print("Business discovery diagnostics:", ", ".join(diagnostics), "results:", len(found))
+    return found
 
 
 class ScanRequest(BaseModel):
