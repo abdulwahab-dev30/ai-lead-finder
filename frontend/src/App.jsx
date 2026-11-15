@@ -53,6 +53,7 @@ function App() {
   const [activeNav, setActiveNav] = useState("Overview");
   const [emailLead, setEmailLead] = useState(null);
   const [draftSubject, setDraftSubject] = useState("");
+  const [recipientEmail, setRecipientEmail] = useState("");
   const [draftBody, setDraftBody] = useState("");
   const [senderName, setSenderName] = useState("");
   const [service, setService] = useState("React, Bubble.io, Python and web application development");
@@ -130,6 +131,7 @@ function App() {
     setEmailLead(lead);
     setDraftSubject("");
     setDraftBody("");
+    setRecipientEmail((lead.business_emails || [])[0] || "");
     setDraftBusy(true);
     try {
       const data = await api("/generate-email", {
@@ -156,7 +158,7 @@ function App() {
   }
   function openMailClient() {
     if (!emailLead) return;
-    const recipient = (emailLead.business_emails || [])[0] || "";
+    const recipient = recipientEmail.trim();
     const href = `mailto:${encodeURIComponent(recipient)}?subject=${encodeURIComponent(draftSubject)}&body=${encodeURIComponent(draftBody)}`;
     window.location.href = href;
     if (emailLead.id) updateStatus(emailLead.id, "contacted");
@@ -307,7 +309,7 @@ function App() {
                 <tbody>
                   {loadingLeads ? <tr><td colSpan="6" className="empty"><Loader2 className="spin"/> Loading leads…</td></tr> :
                     filteredLeads.length ? filteredLeads.map((lead) => <tr key={lead.id}>
-                      <td><div className="company-cell"><div className="company-logo">{initials(lead.company)}</div><div><b>{lead.company}</b><a href={lead.website} target="_blank" rel="noreferrer">{lead.website.replace(/^https?:\/\//, "").replace(/\/$/, "")} <ArrowUpRight size={11}/></a></div></div></td>
+                      <td><div className="company-cell"><div className="company-logo">{initials(lead.company)}</div><div><b>{lead.company}</b><a href={lead.website} target="_blank" rel="noreferrer">{lead.website.replace(/^https?:\/\//, "").replace(/\/$/, "")} <ArrowUpRight size={11}/></a><button className="text-button draft-trigger" onClick={() => createEmailDraft(lead)}><FileText size={13}/> Write outreach email</button></div></div></td>
                       <td>{(lead.business_emails || []).length ? <div className="email-list">{lead.business_emails.slice(0, 2).map((mail) => <button key={mail} onClick={() => copy(mail)} title="Copy email"><Mail size={12}/>{mail}<Copy size={11}/></button>)}{lead.business_emails.length > 2 && <small>+{lead.business_emails.length - 2} more</small>}</div> : <span className="muted">No public inbox found</span>}</td>
                       <td><div className="score"><div className="score-track"><i style={{width: `${(lead.lead_score || 0) * 4}%`}}/></div><b>{lead.lead_score || 0}</b><small>{scoreLabel(lead.lead_score)}</small></div></td>
                       <td><select className={`status-select ${lead.status}`} value={lead.status} onChange={(e) => updateStatus(lead.id, e.target.value)}><option value="new">New</option><option value="reviewed">Reviewed</option><option value="contacted">Contacted</option><option value="replied">Replied</option><option value="interested">Interested</option><option value="not_a_fit">Not a fit</option></select></td>
@@ -327,13 +329,13 @@ function App() {
               <div className="modal-fields">
                 <label>Your name<input value={senderName} onChange={(event) => setSenderName(event.target.value)} placeholder="Your name"/></label>
                 <label>What you offer<input value={service} onChange={(event) => setService(event.target.value)} placeholder="Your development services"/></label>
-                <label>To<input value={(emailLead.business_emails || [])[0] || ""} readOnly placeholder="No public email found — add recipient manually"/></label>
+                <label>To<input type="email" value={recipientEmail} onChange={(event) => setRecipientEmail(event.target.value)} placeholder="Enter recipient email"/></label>
                 <label>Subject<input value={draftSubject} onChange={(event) => setDraftSubject(event.target.value)} placeholder={draftBusy ? "Generating subject…" : "Email subject"}/></label>
                 <label>Message<textarea rows={10} value={draftBody} onChange={(event) => setDraftBody(event.target.value)} placeholder={draftBusy ? "Preparing your personalized email…" : "Your email draft will appear here."}/></label>
               </div>
               <div className="modal-actions">
                 <button className="secondary-button" onClick={() => copy(`Subject: ${draftSubject}\n\n${draftBody}`)} disabled={!draftBody}><Copy size={15}/> Copy email</button>
-                <button className="primary" onClick={openMailClient} disabled={!draftBody || !draftSubject}><Send size={15}/> Open in email app</button>
+                <button className="primary" onClick={openMailClient} disabled={!draftBody || !draftSubject || !recipientEmail.includes("@")}><Send size={15}/> Open in email app</button>
               </div>
               <p className="modal-footnote">This opens your email app with the recipient, subject and message filled in. You review and send it yourself.</p>
             </section>
