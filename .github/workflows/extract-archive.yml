@@ -3,9 +3,6 @@ name: Extract AI Lead Finder source
 on:
   push:
     branches: [main]
-    paths:
-      - "AI_Lead_Finder.zip"
-      - ".github/workflows/extract-archive.yml"
 
 permissions:
   contents: write
