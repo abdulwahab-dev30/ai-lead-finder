@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Activity, ArrowDownToLine, ArrowUpRight, BadgeCheck, Building2, Check,
   ChevronDown, CircleHelp, Command, Copy, Globe2, LayoutDashboard, Loader2,
-  LogOut, Mail, Plus, Search, ShieldCheck, SlidersHorizontal, Sparkles,
+  LogOut, Mail, Plus, Search, ShieldCheck, SlidersHorizontal, Sparkles, FileText, Send,
   Target, Trash2, TrendingUp, Users, X, Zap
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
@@ -51,6 +51,12 @@ function App() {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [activeNav, setActiveNav] = useState("Overview");
+  const [emailLead, setEmailLead] = useState(null);
+  const [draftSubject, setDraftSubject] = useState("");
+  const [draftBody, setDraftBody] = useState("");
+  const [senderName, setSenderName] = useState("");
+  const [service, setService] = useState("React, Bubble.io, Python and web application development");
+  const [draftBusy, setDraftBusy] = useState(false);
 
   useEffect(() => {
     if (!supabase) { setAuthReady(true); return; }
@@ -118,6 +124,42 @@ function App() {
     } finally {
       setSearching(false);
     }
+  }
+
+  async function createEmailDraft(lead) {
+    setEmailLead(lead);
+    setDraftSubject("");
+    setDraftBody("");
+    setDraftBusy(true);
+    try {
+      const data = await api("/generate-email", {
+        method: "POST",
+        body: JSON.stringify({
+          company: lead.company,
+          website: lead.website,
+          country: lead.country || "",
+          niche: lead.niche || "",
+          recipient_email: (lead.business_emails || [])[0] || "",
+          sender_name: senderName || "Your Name",
+          service,
+          tone: "professional and friendly",
+        }),
+      });
+      setDraftSubject(data.subject || "");
+      setDraftBody(data.body || "");
+    } catch (error) {
+      setNotice(error.message);
+      setEmailLead(null);
+    } finally {
+      setDraftBusy(false);
+    }
+  }
+  function openMailClient() {
+    if (!emailLead) return;
+    const recipient = (emailLead.business_emails || [])[0] || "";
+    const href = `mailto:${encodeURIComponent(recipient)}?subject=${encodeURIComponent(draftSubject)}&body=${encodeURIComponent(draftBody)}`;
+    window.location.href = href;
+    if (emailLead.id) updateStatus(emailLead.id, "contacted");
   }
 
   async function updateStatus(id, status) {
@@ -204,7 +246,7 @@ function App() {
         <div className="nav-label second">TOOLS</div>
         <div className="tool-card"><div className="tool-icon"><Zap size={17}/></div><div><b>Lead discovery</b><small>Public website research</small></div><span className="live-dot"/></div>
         <div className="sidebar-bottom">
-          <div className="privacy-card"><ShieldCheck size={17}/><div><b>Privacy-first research</b><small>Role-based public inboxes only. No bulk email sending.</small></div></div>
+          <div className="privacy-card"><ShieldCheck size={17}/><div><b>Privacy-first research</b><small>Public contacts · Human-reviewed outreach.</small></div></div>
           <div className="profile-row"><div className="profile-avatar">{initials(session.user.email)}</div><div className="profile-info"><b>{session.user.email.split("@")[0]}</b><small>Administrator</small></div><button className="icon-button" title="Sign out" onClick={signOut}><LogOut size={16}/></button></div>
         </div>
       </aside>
@@ -272,12 +314,30 @@ function App() {
                       <td className="date-cell">{formatDate(lead.created_at)}</td>
                       <td><button className="icon-button danger-hover" onClick={() => deleteLead(lead.id)} title="Delete lead"><Trash2 size={15}/></button></td>
                     </tr>) :
-                    <tr><td colSpan="6"><div className="empty-state"><div className="empty-icon"><Users size={22}/></div><b>No prospects yet</b><p>Find a few agencies and scan their official websites to build your first lead list.</p></div></td></tr>}
+                    <tr><td colSpan="6"><div className="empty-state"><div className="empty-icon"><Users size={22}/></div><b>No prospects yet</b><p>Find companies, collect public contact emails, then create a tailored outreach message.</p></div></td></tr>}
                 </tbody>
               </table>
             </div>
             <div className="table-bottom"><span>Showing {filteredLeads.length} of {leads.length} prospects</span><span><ShieldCheck size={13}/> Your leads are private to your account</span></div>
           </section>
+
+          {emailLead && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setEmailLead(null); }}>
+            <section className="email-modal" role="dialog" aria-modal="true" aria-label="Create outreach email">
+              <div className="modal-heading"><div><div className="eyebrow">PERSONALIZED OUTREACH</div><h2>Write to {emailLead.company}</h2><p className="muted">Review and edit this message before sending.</p></div><button className="icon-button" onClick={() => setEmailLead(null)}><X size={18}/></button></div>
+              <div className="modal-fields">
+                <label>Your name<input value={senderName} onChange={(event) => setSenderName(event.target.value)} placeholder="Your name"/></label>
+                <label>What you offer<input value={service} onChange={(event) => setService(event.target.value)} placeholder="Your development services"/></label>
+                <label>To<input value={(emailLead.business_emails || [])[0] || ""} readOnly placeholder="No public email found — add recipient manually"/></label>
+                <label>Subject<input value={draftSubject} onChange={(event) => setDraftSubject(event.target.value)} placeholder={draftBusy ? "Generating subject…" : "Email subject"}/></label>
+                <label>Message<textarea rows={10} value={draftBody} onChange={(event) => setDraftBody(event.target.value)} placeholder={draftBusy ? "Preparing your personalized email…" : "Your email draft will appear here."}/></label>
+              </div>
+              <div className="modal-actions">
+                <button className="secondary-button" onClick={() => copy(`Subject: ${draftSubject}\n\n${draftBody}`)} disabled={!draftBody}><Copy size={15}/> Copy email</button>
+                <button className="primary" onClick={openMailClient} disabled={!draftBody || !draftSubject}><Send size={15}/> Open in email app</button>
+              </div>
+              <p className="modal-footnote">This opens your email app with the recipient, subject and message filled in. You review and send it yourself.</p>
+            </section>
+          </div>}
           <footer className="footer"><span>© 2026 ProspectPilot</span><span>Public business contacts only <i/> Research responsibly</span></footer>
         </div>
       </main>
