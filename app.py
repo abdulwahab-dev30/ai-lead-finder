@@ -223,84 +223,120 @@ class DiscoverRequest(BaseModel):
     limit: int = Field(default=8, ge=1, le=8)
 
 def discover_websites(country: str, niche: str, limit: int):
-    # Use several public search frontends because any single engine may rate-limit
-    # serverless requests. Search results are candidates only; scan_website()
-    # performs the SSRF/public-host checks before fetching a business site.
+    """Discover official business domains using provider-specific result parsers."""
     queries = [
         f"{niche} companies in {country} official website",
-        f"best {niche} businesses {country}",
-    ]
-    providers = [
-        ("DuckDuckGo HTML", "https://html.duckduckgo.com/html/"),
-        ("DuckDuckGo Lite", "https://lite.duckduckgo.com/lite/"),
-        ("Bing", "https://www.bing.com/search"),
-        ("Yahoo", "https://search.yahoo.com/search"),
+        f"top {niche} agencies {country}",
+        f"{niche} company {country} contact",
     ]
     excluded = {
         "google.com", "bing.com", "duckduckgo.com", "yahoo.com",
         "facebook.com", "linkedin.com", "instagram.com", "youtube.com",
         "wikipedia.org", "yelp.com", "clutch.co", "crunchbase.com",
-        "mapquest.com", "yellowpages.com", "trustpilot.com",
+        "mapquest.com", "yellowpages.com", "trustpilot.com", "reddit.com",
+        "glassdoor.com", "indeed.com", "g2.com", "sortlist.com",
     }
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/rss+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
-        "Cache-Control": "no-cache",
     }
-    found, seen, diagnostics = [], set(), []
     session = requests.Session()
     session.headers.update(headers)
+    found, seen, diagnostics = [], set(), []
 
-    def unwrap_result(href: str) -> str:
-        href = (href or "").strip()
-        parsed = urlparse(href)
-        host = (parsed.hostname or "").lower()
-        if host.endswith("duckduckgo.com") and parsed.path.startswith("/l/"):
-            target = parse_qs(parsed.query).get("uddg", [""])[0]
-            return unquote(target)
-        if host.endswith("bing.com") and parsed.path.startswith("/ck/"):
-            # Bing's tracking links are not business websites.
-            return ""
-        if href.startswith("//"):
-            return "https:" + href
-        return href
+    def add_candidate(raw_url: str):
+        raw_url = unquote((raw_url or "").strip())
+        if raw_url.startswith("//"):
+            raw_url = "https:" + raw_url
+        parsed = urlparse(raw_url)
+        host = (parsed.hostname or "").lower().removeprefix("www.")
+        if parsed.scheme not in ("http", "https") or not host or "." not in host:
+            return
+        if any(host == item or host.endswith("." + item) for item in excluded):
+            return
+        if parsed.path.lower().endswith((".pdf", ".jpg", ".jpeg", ".png", ".webp")):
+            return
+        clean_url = parsed._replace(query="", fragment="").geturl().rstrip("/")
+        if host not in seen:
+            seen.add(host)
+            found.append(clean_url)
 
-    for provider, endpoint in providers:
+    for query in queries:
+        if len(found) >= limit:
+            break
+        # Bing's RSS endpoint provides direct result URLs and avoids brittle HTML selectors.
+        try:
+            response = session.get(
+                "https://www.bing.com/search",
+                params={"q": query, "format": "rss"},
+                timeout=12,
+            )
+            diagnostics.append(f"BingRSS:{response.status_code}")
+            if response.ok and ("<rss" in response.text[:1000].lower() or "<feed" in response.text[:1000].lower()):
+                feed = BeautifulSoup(response.text, "xml")
+                for item in feed.find_all(["item", "entry"]):
+                    link = item.find("link")
+                    href = (link.get("href") if link and link.get("href") else link.get_text(strip=True) if link else "")
+                    add_candidate(href)
+                    if len(found) >= limit:
+                        break
+        except requests.RequestException as exc:
+            diagnostics.append(f"BingRSS:{type(exc).__name__}")
+
+    # HTML fallbacks use each engine's own query parameters and result markup.
+    html_providers = [
+        ("BingHTML", "https://www.bing.com/search", lambda q: {"q": q}),
+        ("Yahoo", "https://search.yahoo.com/search", lambda q: {"p": q}),
+        ("DuckDuckGo", "https://html.duckduckgo.com/html/", lambda q: {"q": q}),
+    ]
+    for provider, endpoint, params_for in html_providers:
+        if len(found) >= limit:
+            break
         provider_count = 0
         for query in queries:
+            if len(found) >= limit:
+                break
             try:
-                response = session.get(endpoint, params={"q": query, "p": query}, timeout=10)
+                response = session.get(endpoint, params=params_for(query), timeout=12)
                 diagnostics.append(f"{provider}:{response.status_code}")
-                response.raise_for_status()
+                if not response.ok:
+                    continue
                 soup = BeautifulSoup(response.text, "html.parser")
-                anchors = soup.select(
-                    "a.result__a, .result a[href], .web-result a[href], "
-                    "li.b_algo h2 a, h2 a, a[href]"
-                )
+                if provider == "BingHTML":
+                    anchors = soup.select("li.b_algo h2 a[href], #b_results h2 a[href]")
+                elif provider == "Yahoo":
+                    anchors = soup.select("div.dd.algo h3 a[href], h3 a[href], div.algo a[href]")
+                else:
+                    anchors = soup.select("a.result__a[href], .result__body a[href]")
                 for anchor in anchors:
-                    href = unwrap_result(anchor.get("href", ""))
+                    href = anchor.get("href", "")
                     parsed = urlparse(href)
-                    host = (parsed.hostname or "").lower().removeprefix("www.")
-                    if parsed.scheme not in ("http", "https") or not host or "." not in host:
-                        continue
-                    if any(host == item or host.endswith("." + item) for item in excluded):
-                        continue
-                    # Skip obvious non-company file and social/profile destinations.
-                    if parsed.path.lower().endswith((".pdf", ".jpg", ".png", ".jpeg")):
-                        continue
-                    if host not in seen:
-                        seen.add(host)
-                        found.append(parsed._replace(query="", fragment="").geturl())
-                        provider_count += 1
-                        if len(found) >= limit:
-                            print("Business discovery diagnostics:", ", ".join(diagnostics), "results:", len(found))
-                            return found
+                    host = (parsed.hostname or "").lower()
+                    if host.endswith("duckduckgo.com"):
+                        href = parse_qs(parsed.query).get("uddg", [""])[0]
+                    elif host.endswith("bing.com") and parsed.path.startswith("/ck/"):
+                        # Bing's encoded tracking URLs use the u=a1... parameter.
+                        token = parse_qs(parsed.query).get("u", [""])[0]
+                        if token.startswith("a1"):
+                            import base64
+                            try:
+                                href = base64.b64decode(token[2:] + "===").decode("utf-8", "ignore")
+                            except Exception:
+                                href = ""
+                        else:
+                            href = ""
+                    before = len(found)
+                    add_candidate(href)
+                    provider_count += len(found) - before
+                    if len(found) >= limit:
+                        break
             except requests.RequestException as exc:
                 diagnostics.append(f"{provider}:{type(exc).__name__}")
         diagnostics.append(f"{provider}_candidates:{provider_count}")
+
     print("Business discovery diagnostics:", ", ".join(diagnostics), "results:", len(found))
-    return found
+    return found[:limit]
 
 
 class ScanRequest(BaseModel):
